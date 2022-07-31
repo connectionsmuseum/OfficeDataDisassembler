@@ -23,7 +23,7 @@ class GRPTBL_entry:
     def parse_GRPTBL_entry(cls, words):
         header = words[0]
         n_entries = words[1] >> 4
-        pointer = twentybit(words[2], words[3])
+        pointer = twentybit(words[1], words[2])
         return cls(header, n_entries, pointer)
 
     def __str__(self):
@@ -33,6 +33,33 @@ class GRPTBL_entry:
                                                                header_lower,
                                                                self.n_entries,
                                                                self.pointer)
+
+@dataclass
+class TRUNK_GROUP_entry:
+    """Figure 12D"""
+    grp_num: int
+    mbr: bool
+    exists: bool
+    highest_member: int
+    sel_status_block_index: int
+    member_list_index: int
+    circuit_code: int
+
+    @classmethod
+    def parse_TRUNK_GROUP_entry(cls, grp_num, words):
+        mbr = words[0] & 2**8 > 0
+        exists = words[0] & 2**7 > 0
+        highest_member = words[0] & 0x7f
+        sel_status_block_index = words[1] & 0x3fff
+        member_list_index = words[2] & 0x3fff
+        circuit_code = words[3] & 0x1f
+        return cls(grp_num, mbr, exists, highest_member, sel_status_block_index, member_list_index,
+                   circuit_code)
+
+
+
+def twentybit(a, b):
+    return ((a & 0xf) << 16) + b
 
 def load_track(base_filename):
 
@@ -127,13 +154,10 @@ if __name__ == '__main__':
     print("------")
     print("MTI:")
     mti_data = range_starting_at_address(MTI, data)
-    #print_data(MTI, mti_data, length=20)
 
-    for n in range(0, 20):
-       print("{:06o}".format(mti_data.words[n]))
-
-    def twentybit(a,b):
-        return ((a & 0xf) << 16) + b
+    if False:
+        for n in range(0, 20):
+           print("{:06o}".format(mti_data.words[n]))
 
 
     grptbl_entry_pbx = GRPTBL_entry.parse_GRPTBL_entry(mti_data.words)
@@ -144,4 +168,19 @@ if __name__ == '__main__':
     print("SVC CKTS ", grptbl_entry_svc)
     print("TRUNK GROUPS 128-191 ", grptbl_entry_trunks_low)
     print("TRUNK GROUPS 192-255 ", grptbl_entry_trunks_high)
+
+
+
+    trunk_groups_128 = range_starting_at_address(grptbl_entry_trunks_low.pointer, data)
+
+    for n in range(0, grptbl_entry_trunks_low.n_entries):
+        arbitrary_offset = 2
+        pointer = grptbl_entry_trunks_low.pointer + arbitrary_offset + (8*n)
+        trunk_data_range = range_starting_at_address(pointer, data)
+        group_entry = TRUNK_GROUP_entry.parse_TRUNK_GROUP_entry(128 + n, trunk_data_range.words)
+        print(group_entry)
+
+
+
+
 
