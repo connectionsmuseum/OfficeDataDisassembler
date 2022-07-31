@@ -79,7 +79,7 @@ def load_track(base_filename):
 
             new_range = DataRange(start_address=offset,
                                   end_address=offset+length,
-                                  words=block_data[next_header:next_header+length])
+                                  words=block_data[next_header+2:next_header+length])
             data_ranges.append(new_range)
 
             next_header += length + 2
@@ -147,7 +147,7 @@ if __name__ == '__main__':
                       "o{:06o}, o{:06o}".format(data_range.start_address, data_range.end_address))
 
     #MTI_base = 0o420000
-    MTI = 0o421410 + 2
+    MTI = 0o421410
 
     # MTI_entries = [("GRPTBL", 0o421410)]
 
@@ -174,8 +174,7 @@ if __name__ == '__main__':
     trunk_groups_128 = range_starting_at_address(grptbl_entry_trunks_low.pointer, data)
 
     for n in range(0, grptbl_entry_trunks_low.n_entries):
-        arbitrary_offset = 2
-        pointer = grptbl_entry_trunks_low.pointer + arbitrary_offset + (8*n)
+        pointer = grptbl_entry_trunks_low.pointer + (8*n)
         trunk_data_range = range_starting_at_address(pointer, data)
         group_entry = TRUNK_GROUP_entry.parse_TRUNK_GROUP_entry(128 + n, trunk_data_range.words)
         print(group_entry)
