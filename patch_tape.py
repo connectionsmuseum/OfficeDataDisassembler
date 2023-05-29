@@ -7,19 +7,15 @@ import argparse
 import textwrap
 from dataclasses import dataclass
 
-# Patches are word location, original word, then new word
-# Position is 1-indexed from the first real word, preamble not counted.
-
-# Track 1 block 0001
-patches = [(269, 0o103024, 0o153520),
-           (270, 0o031000, 0o010410)
-           ]
+import fastcrc
 
 @dataclass
 class MemoryPatch:
     location: int
     old_value: int
     new_value: int
+    min_block: int = 0
+    max_block: int = 400
     comment: str = ""
 
 @dataclass
@@ -31,10 +27,16 @@ class MemoryBlock:
 help_string = textwrap.dedent('''
     Replace specific words in ESS tape blocks
 
-    Patch file must be formatted with all values in OCTAL as:
-    memory location, old word, new word, comment
+    Patch file must be formatted with all memory locations and values in OCTAL as:
+    memory location, old word, new word, min block, max block, comment
+
+    min and max block locations are optional. These enable patches to
+    affect only the translation area while leaving the back office data
+    unchanged.
 
     Lines starting with # are ignored.
+
+    Patched blocks are written to [block_number]_patched.bin. Originals are left in place.
     ''')
 
 
@@ -56,7 +58,15 @@ def parse_patch_file(patch_file):
         patch = MemoryPatch(location=int(splits[0], 8),
                             old_value=int(splits[1], 8),
                             new_value=int(splits[2], 8))
+
+        if(len(splits) >= 4):
+            patch.min_block = int(splits[3])
+
+        if(len(splits) >= 5):
+            patch.max_block = int(splits[4])
+
         patches.append(patch)
+
     return patches
 
 
@@ -77,6 +87,13 @@ def load_block_data(block_file):
             words_list.append(word)
 
     return words_list
+
+def write_block(filename, block_data):
+
+    with open(filename, 'wb') as f:
+        for word in block_data:
+            f.write(struct.pack('>H', word))
+
 
 def find_block_destinations(block_data):
     '''
@@ -101,6 +118,14 @@ def find_block_destinations(block_data):
         next_header += length + 2
 
     return block_infos
+
+
+def compute_block_crc(block_data):
+
+    crc_data = b''.join([x.to_bytes(2, byteorder='little') for x in block_data[1:-2]])
+
+    crc_value = fastcrc.crc16.arc(crc_data)
+    return crc_value
 
 
 
@@ -137,13 +162,39 @@ if __name__ == '__main__':
 
         block_dests = find_block_destinations(block_data)
 
+        found_patches = []
         for patch in patches:
-            for block in block_dests:
-                if(patch.location >= block.location and
-                   patch.location < (block.location + block.length)):
-                    print(f"Found patch destination {patch.location:o}, block {block_n}")
+            for memory_block in block_dests:
+                if(patch.location >= memory_block.location and
+                   patch.location < (memory_block.location + memory_block.length) and
+                   block_n >= patch.min_block and
+                   block_n < patch.max_block):
+                    print(f"Found patch destination {patch.location:o}, tape block {block_n}")
+                    found_patches.append((patch, memory_block))
 
+        if(len(found_patches) == 0):
+            continue
 
+        prepatch_crc_value = compute_block_crc(block_data)
+        block_data_crc = block_data[-2]
+        if(prepatch_crc_value != block_data_crc):
+            print(f"Pre-patching computed CRC {prepatch_crc_value:06o} does not match block CRC {block_data_crc:06o}, quitting")
+            sys.exit(0)
 
+        new_block_data = block_data.copy()
+        for patch, memory_block in found_patches:
+            offset_in_block = patch.location - memory_block.location + memory_block.offset_in_block
+            existing_value = block_data[offset_in_block]
+            print(f"Location {patch.location:06o}, existing memory value {existing_value:06o}, expected old value "
+                  f"{patch.old_value:06o}, new memory value {patch.new_value:06o}")
+            if(existing_value == patch.old_value):
+                new_block_data[offset_in_block] = patch.new_value
+            else:
+                print("Old value does not match expected old value, quitting.")
+                sys.exit(0)
 
+        new_crc = compute_block_crc(new_block_data)
+        new_block_data[-2] = new_crc
+        patched_filename = os.path.join(args.track_directory ,f"{block_n:04d}_patched.bin")
+        write_block(patched_filename, new_block_data)
 
