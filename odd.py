@@ -7,15 +7,107 @@ import struct
 import math
 from dataclasses import dataclass
 
-
 @dataclass
 class DataRange:
     start_address: int
     end_address: int
     words: list
 
+    def subset(self, offset, length):
+        new_start = self.start_address + offset
+        return DataRange(start_address=new_start,
+                         end_address=new_start + length,
+                         words=self.words[offset:(offset+length)])
+
+    def subset_at_address(self, address, length):
+
+        if address < self.start_address or address + length > self.end_address:
+            raise ValueError(f"New addresss 0o{address:06o} not within range 0o{self.start_address:06o}-0o{self.end_address:06o}")
+
+        offset = address - self.start_address
+
+        return DataRange(start_address=address,
+                         end_address=address + length,
+                         words=self.words[offset:(offset+length)])
+
+@dataclass
+class GRPTBL:
+    dataRange: DataRange
+    pbx_table_address: int
+    pbx_table_entry_count: int
+    pbx_table_entries: list   #unused
+
+    svc_table_address: int
+    svc_table_entry_count: int
+    svc_table_entries: list[SERVICE_GROUP_entry]
+
+    trunk_table_low_address: int
+    trunk_table_low_entry_count: int
+    trunk_table_low_entries: list[TRUNK_GROUP_entry]
+
+    trunk_table_high_address: int
+    trunk_table_high_entry_count: int
+    trunk_table_high_entries: list[TRUNK_GROUP_entry]
+
+    @classmethod
+    def parse_GRPTBL(cls, dataRange: DataRange):
+
+        # grptbl_entry_pbx = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words)
+        # grptbl_entry_svc = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[3:])
+        # grptbl_entry_trunks_low = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[6:])
+        # grptbl_entry_trunks_high = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[9:])
+
+        def parse_entry(dataRange):
+            n_entries = dataRange.words[1] >> 4
+            pointer = twentybit(dataRange.words[1], dataRange.words[2])
+            return pointer, n_entries
+
+        svc_table_address, svc_table_entry_count = parse_entry(dataRange.subset(3,3))
+        svc_table_entries = []
+        for n in range(0, svc_table_entry_count):
+            group_number = 64 + n
+            pointer = svc_table_address + (4*n)
+            svc_data_range = dataRange.subset_at_address(pointer, 4)
+            group_entry = SERVICE_GROUP_entry.parse(group_number, svc_data_range)
+            svc_table_entries.append(group_entry)
+
+        trunk_table_low_address, trunk_table_low_entry_count = parse_entry(dataRange.subset(6,3))
+        trunk_table_low_entries = []
+        for n in range(0, trunk_table_low_entry_count):
+            group_number = 128 + n
+            pointer = trunk_table_low_address + (8*n)
+            trunk_data_range = dataRange.subset_at_address(pointer, 8)
+            group_entry = TRUNK_GROUP_entry.parse(group_number, trunk_data_range)
+            trunk_table_low_entries.append(group_entry)
+
+        trunk_table_high_address, trunk_table_high_entry_count = parse_entry(dataRange.subset(9,3))
+        trunk_table_high_entries = []
+        for n in range(0, trunk_table_high_entry_count):
+            group_number = 128 + n
+            pointer = trunk_table_high_address + (8*n)
+            trunk_data_range = dataRange.subset_at_address(pointer, 8)
+            group_entry = TRUNK_GROUP_entry.parse(group_number, trunk_data_range)
+            trunk_table_high_entries.append(group_entry)
+
+        return cls(dataRange=dataRange,
+                   pbx_table_address=0,
+                   pbx_table_entry_count=0,
+                   pbx_table_entries=[],
+                   svc_table_address=svc_table_address,
+                   svc_table_entry_count=svc_table_entry_count,
+                   svc_table_entries=svc_table_entries,
+                   trunk_table_low_address=trunk_table_low_address,
+                   trunk_table_low_entry_count=trunk_table_low_entry_count,
+                   trunk_table_low_entries=trunk_table_low_entries,
+                   trunk_table_high_address=trunk_table_high_address,
+                   trunk_table_high_entry_count=trunk_table_high_entry_count,
+                   trunk_table_high_entries=trunk_table_high_entries
+        )
+
+
 @dataclass
 class GRPTBL_entry:
+    """Deprecated"""
     header: int
     n_entries: int
     pointer: int
@@ -45,17 +137,23 @@ class TRUNK_GROUP_entry:
     sel_status_block_index: int
     member_list_index: int
     circuit_code: int
+    memory_address: int
 
     @classmethod
-    def parse_TRUNK_GROUP_entry(cls, grp_num, words):
+    def parse(cls, grp_num, dataRange):
+        return cls.parse_TRUNK_GROUP_entry(grp_num, dataRange.words, dataRange.start_address)
+
+    @classmethod
+    def parse_TRUNK_GROUP_entry(cls, grp_num, words, memory_address):
         mbr = words[0] & 2**8 > 0
         exists = words[0] & 2**7 > 0
         highest_member = words[0] & 0x7f
         sel_status_block_index = words[1] & 0x3fff
         member_list_index = words[2] & 0x3fff
         circuit_code = words[3] & 0x1f
+        memory_address = memory_address
         return cls(grp_num, mbr, exists, highest_member, sel_status_block_index, member_list_index,
-                   circuit_code)
+                   circuit_code, memory_address)
 
 @dataclass
 class SERVICE_GROUP_entry:
@@ -67,17 +165,23 @@ class SERVICE_GROUP_entry:
     sel_status_block_index: int
     member_list_index: int
     circuit_code: int
+    memory_address: int
 
     @classmethod
-    def parse_SERVICE_GROUP_entry(cls, grp_num, words):
+    def parse(cls, grp_num, range):
+        return cls.parse_SERVICE_GROUP_entry(grp_num, range.words, range.start_address)
+
+    @classmethod
+    def parse_SERVICE_GROUP_entry(cls, grp_num, words, memory_address):
         mbr = words[0] & 2**8 > 0
         exists = words[0] & 2**7 > 0
         highest_member = words[0] & 0x7f
         sel_status_block_index = words[1] & 0x3fff
         member_list_index = words[2] & 0x3fff
         circuit_code = words[3] & 0x1f
+        memory_address = memory_address
         return cls(grp_num, mbr, exists, highest_member, sel_status_block_index, member_list_index,
-                   circuit_code)
+                   circuit_code, memory_address)
 
 @dataclass
 class TRUNK_CIRCUIT_MEMBER_LIST_entry:
@@ -94,6 +198,9 @@ class TRUNK_CIRCUIT_MEMBER_LIST_entry:
 
 
 def twentybit(a, b):
+    """
+    Convert two words into a single 20-bit integer.
+    """
     return ((a & 0xf) << 16) + b
 
 def load_track(base_filename, start_block=0, end_block=358):
@@ -167,6 +274,17 @@ def print_data(target_address, block, length=5):
     for n in range(offset, offset+length):
        print("{:06o}".format(block.words[n]))
 
+def decode_scanpoint(scanpoint_field):
+    """
+    Translate a packed scanpoint into (scanner, row, entry) tuples.
+    """
+    return (scanpoint_field >> 9, (scanpoint_field >> 4) & 0b11111, scanpoint_field & 0b1111)
+
+def decode_dta(value):
+    """
+    Decode a Distributor Triplet Address
+    """
+    return (value & 0xff, (value >> 8) & 0b11)
 
 if __name__ == '__main__':
 
@@ -174,12 +292,6 @@ if __name__ == '__main__':
 
     base_filename = "TapeData/1/"
     data = load_track(base_filename)
-
-    if False:
-        for data_range in data:
-            if(data_range.end_address > data_range.start_address):
-                print(data_range.start_address, data_range.end_address,
-                      "o{:06o}, o{:06o}".format(data_range.start_address, data_range.end_address))
 
     #MTI_base = 0o420000
     # MTI = 0o421410
@@ -190,10 +302,10 @@ if __name__ == '__main__':
     grptable_data = range_starting_at_address(grptable_base, data)
 
 
-    grptbl_entry_pbx = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words)
-    grptbl_entry_svc = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[3:])
-    grptbl_entry_trunks_low = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[6:])
-    grptbl_entry_trunks_high = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[9:])
+    # grptbl_entry_pbx = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words)
+    # grptbl_entry_svc = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[3:])
+    # grptbl_entry_trunks_low = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[6:])
+    # grptbl_entry_trunks_high = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[9:])
     print("PBX/MLHG ", grptbl_entry_pbx)
     print("SVC CKTS ", grptbl_entry_svc)
     print("TRUNK GROUPS 128-191 ", grptbl_entry_trunks_low)
@@ -212,31 +324,34 @@ if __name__ == '__main__':
     print("MEMLIST TRUNKS 128-191", memlist_entry_trunks_low)
     print("MEMLIST TRUNKS 192-255", memlist_entry_trunks_high)
 
-    groups = {}
-    for n in range(0, grptbl_entry_trunks_low.n_entries):
-        group_number = 128 + n
-        pointer = grptbl_entry_trunks_low.pointer + (8*n)
-        trunk_data_range = range_starting_at_address(pointer, data)
-        group_entry = TRUNK_GROUP_entry.parse_TRUNK_GROUP_entry(group_number, trunk_data_range.words)
-        groups[group_number] = group_entry
+    # groups = {}
+    # for n in range(0, grptbl_entry_trunks_low.n_entries):
+    #     group_number = 128 + n
+    #     pointer = grptbl_entry_trunks_low.pointer + (8*n)
+    #     trunk_data_range = range_starting_at_address(pointer, data)
+    #     group_entry = TRUNK_GROUP_entry.parse_TRUNK_GROUP_entry(group_number,
+    #                                                             trunk_data_range.words, pointer)
+    #     groups[group_number] = group_entry
 
-    svc_groups = {}
-    for n in range(0, grptbl_entry_svc.n_entries):
-        group_number = 64 + n
-        pointer = grptbl_entry_svc.pointer + (4*n)
-        svc_data_range = range_starting_at_address(pointer, data)
-        group_entry = SERVICE_GROUP_entry.parse_SERVICE_GROUP_entry(group_number, svc_data_range.words)
-        svc_groups[group_number] = group_entry
+    # svc_groups = {}
+    # for n in range(0, grptbl_entry_svc.n_entries):
+    #     group_number = 64 + n
+    #     pointer = grptbl_entry_svc.pointer + (4*n)
+    #     svc_data_range = range_starting_at_address(pointer, data)
+    #     group_entry = SERVICE_GROUP_entry.parse_SERVICE_GROUP_entry(group_number,
+    #                                                                 svc_data_range.words, pointer)
+    #     svc_groups[group_number] = group_entry
 
-    print("Service Circuits:")
-    for group_n, group in svc_groups.items():
-        if(group.exists):
-            print(group)
+    if False:
+        print("Service Circuits:")
+        for group_n, group in svc_groups.items():
+            if(group.exists):
+                print(group)
 
-    print("Trunks:")
-    for group_n, group in groups.items():
-        if(group.exists):
-            print(group)
+        print("Trunks:")
+        for group_n, group in groups.items():
+            if(group.exists):
+                print(group)
 
     print("-"*20)
 
@@ -246,11 +361,7 @@ if __name__ == '__main__':
                                                                  (svc_table_head.words[0] >> 7) & 0x7f,
                                                                  svc_table_head.words[0] & 0x7f))
 
-    def decode_dta(value):
-        return (value & 0xff, (value >> 8) & 0b11)
 
-    def decode_scanpoint(scanpoint_field):
-        return (scanpoint_field >> 9, (scanpoint_field >> 4) & 0b11111, scanpoint_field & 0b1111)
 
     for group_n, svc_group in svc_groups.items():
 
@@ -261,6 +372,11 @@ if __name__ == '__main__':
         print("GROUP {:3d} N members: {:d}, N spares: {:d}".format(group_n,
                                                                    (member_list_range.words[0] >> 7) & 0x7f,
                                                                    member_list_range.words[0] & 0x7f))
+        print(f"Start address: 0o{member_list_range.start_address:o}, End address: 0o{member_list_range.end_address:o}")
+        print(f"Header byte: 0o{member_list_range.words[0]:o}")
+
+        group_format = member_list_range.words[0] >> 14
+
         for member_n in range(0, svc_group.highest_member + 1):
             offset = memlist_entry_svc.pointer + svc_group.member_list_index + member_n//2 + 1
 
@@ -270,20 +386,38 @@ if __name__ == '__main__':
             else:
                 svcnbr = svc_data.words[0] & 0xff
 
+            if group_format == 0:
+                print("Group {:d} Member {:d} PBX Hunt addr {:o}".format(group_n, member_n, offset))
 
-            high_offset = memlist_entry_svc.pointer + svc_group.member_list_index + math.ceil((svc_group.highest_member + 1)/2) + member_n + 1
-            svc_data_high = range_starting_at_address(high_offset, data)
-            ckt_code = svc_data_high.words[0] >> 11
-            dta = svc_data_high.words[0] & 0xfff
-            dp_PD, dp_trip = decode_dta(dta)
+            elif group_format == 2:
 
-            scanpoint_string = "{:02d} {:02d} {:02d}".format(*decode_scanpoint(svcnbr))
-            print("Group {:d} Member {:d} SVCNBR {:s}, ckt_code {:d}, DP {:03d} {:d} ({:d})".format(group_n,
-                                                                                             member_n,
-                                                                                             scanpoint_string,
-                                                                                             ckt_code,
-                                                                                             dp_PD,
-                                                                                             dp_trip, dta))
+                high_offset = memlist_entry_svc.pointer + svc_group.member_list_index + math.ceil((svc_group.highest_member + 1)/2) + member_n + 1
+                svc_data_high = range_starting_at_address(high_offset, data)
+                ckt_code = svc_data_high.words[0] >> 11
+                dta = svc_data_high.words[0] & 0xfff
+                dp_PD, dp_trip = decode_dta(dta)
+
+                scanpoint_string = "{:02d} {:02d} {:02d}".format(*decode_scanpoint(svcnbr))
+                print("Group {:d} Member {:d} SVCNBR {:s}, ckt_code {:d}, DP {:03d} {:d} ({:d}) addr {:o}".format(group_n,
+                                                                                                                  member_n,
+                                                                                                                  scanpoint_string,
+                                                                                                                  ckt_code,
+                                                                                                                  dp_PD,
+                                                                                                                  dp_trip,
+                                                                                                                  dta,
+                                                                                                                  offset))
+            elif group_format == 1:
+                TEN = member_list_range.words[member_n + 1]
+                print("Group {:d} Member {:d} TEN {:04o} addr {:o}".format(group_n,
+                                                                           member_n,
+                                                                           TEN,
+                                                                           offset))
+            else:
+                print("Group {:d} Member {:d} unknown format addr {:o}".format(group_n,
+                                                                               member_n,
+                                                                               offset))
+
+
 
     print("-"*20)
     print("Trunks:")
@@ -309,11 +443,7 @@ if __name__ == '__main__':
                                                              (distribute_field >> 2) & 0x1ff,
                                                              distribute_field & 0b11)
 
-            print("GROUP {:d}, MEMBER {:d}, SPN {:s}, DTA {:s} ({:d}), CKTCODE {:d} ".format(group_n, member_n,
-                                                                                        scanpoint_string,
-                                                                                        distribute_string,
-                                                                                      distribute_field,
-                                                                                        circuit_member.words[1]
-                                                                                      >> 11,
-                                                                                      ))
+            cktcode = circuit_member.words[1] >> 11
+            print(f"GROUP {group_n:d}, MEMBER {member_n:d}, SPN {scanpoint_string:s}, "
+                  f"DTA {distribute_string:s} ({distribute_field:d}), CKTCODE {cktcode:d} ")
 
