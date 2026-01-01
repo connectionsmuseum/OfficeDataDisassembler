@@ -13,6 +13,10 @@ class DataRange:
 
     def subset(self, offset, length):
         new_start = self.start_address + offset
+
+        if new_start + length > self.end_address:
+            raise ValueError(f"Offset {offset} and length {length} not within size {self.end_address - self.start_address}")
+
         return DataRange(start_address=new_start,
                          end_address=new_start + length,
                          words=self.words[offset:(offset+length)])
@@ -50,28 +54,60 @@ class DataRangeSet:
             (target_address < data_range.end_address)):
                 return data_range
 
-        raise ValueError("Target address not found in data")
+        raise ValueError(f"Target address 0o{target_address:o} not found in data")
 
     def range_starting_at_address(self, target_address: int, length: int = 0) -> DataRange:
         """
         Return a range starting at the target address.
 
-        Range is truncated to `length` if specified, otherwise the remainder of
-        the DataRange is returned.
+        Range is truncated to `length` if specified. If length is not specified,
+        the remainder of the DataRange containing the target_address is
+        returned.
         """
 
         original_range = self._find_range(target_address)
         offset = target_address - original_range.start_address
-        new_range = DataRange(start_address=original_range.start_address + offset,
-                            end_address=original_range.end_address,
-                            words=np.copy(original_range.words[offset:(offset+length)] if length > 0
-                                          else original_range.words[offset:]))
+        if length == 0:
+            new_range = DataRange(
+                start_address=original_range.start_address + offset,
+                end_address=original_range.end_address,
+                words=np.copy(original_range.words[offset:]),
+            )
+
+        elif length > 0 and (offset + length) <= len(original_range.words):
+            new_range = DataRange(
+                start_address=original_range.start_address + offset,
+                end_address=original_range.end_address,
+                words=np.copy(original_range.words[offset : (offset + length)]),
+            )
+        else:
+            # The more difficult case, combining ranges
+            new_word_list = []
+            new_word_list.append(np.copy(original_range.words[offset:]))
+            current_address = original_range.end_address
+            target_end_address = target_address + length
+            while current_address < target_end_address:
+                next_range = self._find_range(current_address)
+                max_offset = min(target_end_address - current_address,
+                                 next_range.end_address - current_address)
+                assert max_offset > 0, "max_offset should not be negative"
+
+                new_word_list.append(np.copy(next_range.words[:max_offset]))
+                current_address += max_offset
+
+            new_range = DataRange(
+                start_address=target_address,
+                end_address=target_address + length,
+                words=np.concatenate(new_word_list),
+            )
+
         return new_range
 
 
-def twentybit(a, b):
+def twentybit(a: int, b: int) -> int:
     """
-    Convert two words into a single 20-bit integer.
+    Convert two words into a single 20-bit integer. The first word contains the
+    high four bits, and the low 16 bits are in the second word.
     """
     return ((a & 0xf) << 16) + b
 

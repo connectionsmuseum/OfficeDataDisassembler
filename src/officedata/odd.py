@@ -1,7 +1,7 @@
 
 from dataclasses import dataclass
 
-from .image_tools import twentybit, load_track, DataRange, DataRangeSet, decode_dta
+from .image_tools import twentybit, load_track, DataRange, DataRangeSet, decode_dta, decode_scanpoint
 
 @dataclass
 class GRPTBL_entry:
@@ -265,6 +265,10 @@ class MEMLST_SVC_GROUP:
 
         return cls(n_members=n_members, n_spares=n_spares, group_format=group_format, members=members)
 
+    def __repr__(self):
+        return (f"MEMLST_SVC_GROUP(n_members={self.n_members:d}, n_spares={self.n_spares:d}, "
+                f"group_format={self.group_format:d}, members=[{len(self.members)} entries])")
+
 
 @dataclass
 class MEMLST_entry:
@@ -302,72 +306,159 @@ class MEMLST:
                    memlist_trunks_low=memlist_trunks_low,
                    memlist_trunks_high=memlist_trunks_high)
 
+@dataclass
+class UNIV_SUBTRANSLATOR:
+    address: int
+    u_type: int
+    ten: int | None = None
+    mem_number: int | None = None
+    grp_number: int | None = None
+    tone_scanpoint: int | None = None
+    supv_scanpoint: int | None = None
+    n_lines: int | None = None
 
-def cli():
-    """Deprecated, should be handled in cli.py"""
+    @classmethod
+    def parse(cls, data: DataRange):
+        address = data.start_address
+        u_type = data.words[0] >> 13
 
-    base_filename = "TapeData/1/"
-    data = load_track(base_filename)
+        match u_type:
+            case 1 | 2:
+                ten = data.words[0] & 0x1ff
+                grp_number = data.words[1] & 0xff
+                mem_number = data.words[1] >> 8
+                return cls(address=address, u_type=u_type, ten=ten, grp_number=grp_number, mem_number=mem_number)
 
-    #MTI_base = 0o420000
-    # MTI = 0o421410
-    grptable_base = 0o421410
+            case 3:
+                tone_scanpoint = data.words[0] & 0x1ff
+                return cls(address=address, u_type=u_type, tone_scanpoint=tone_scanpoint)
 
-    # MTI_entries = [("GRPTBL", 0o421410)]
+            case 4:
+                supv_scanpoint = data.words[0] & 0x1ff
+                return cls(address=address, u_type=u_type, supv_scanpoint=supv_scanpoint)
 
-    grptable_data = range_starting_at_address(grptable_base, data)
+            case _:
+                return cls(address=address, u_type=u_type)
 
-    # grptbl_entry_pbx = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words)
-    # grptbl_entry_svc = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[3:])
-    # grptbl_entry_trunks_low = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[6:])
-    # grptbl_entry_trunks_high = GRPTBL_entry.parse_GRPTBL_entry(grptable_data.words[9:])
-    print("PBX/MLHG ", grptbl_entry_pbx)
-    print("SVC CKTS ", grptbl_entry_svc)
-    print("TRUNK GROUPS 128-191 ", grptbl_entry_trunks_low)
-    print("TRUNK GROUPS 192-255 ", grptbl_entry_trunks_high)
+@dataclass
+class LINE_SUBTRANSLATOR:
+    address: int
+    u_type: int
+    terminal: int | None = None
+    group: int | None = None
+    scanpoint: tuple[int, int, int] | None = None
 
-    memlist_base = 0o421424
+    @classmethod
+    def parse(cls, data: DataRange):
+        address = data.start_address
+        u_type = data.words[0] >> 12
 
-    memlist_data = range_starting_at_address(memlist_base, data)
+        match u_type:
+            case 10:
+                scanpoint = data.words[1] & 0xfff
+                return cls(address=address, u_type=u_type, scanpoint=decode_scanpoint(scanpoint))
 
-    memlist_entry_pbx = GRPTBL_entry.parse_GRPTBL_entry(memlist_data.words)
-    memlist_entry_svc = GRPTBL_entry.parse_GRPTBL_entry(memlist_data.words[3:])
-    memlist_entry_trunks_low = GRPTBL_entry.parse_GRPTBL_entry(memlist_data.words[6:])
-    memlist_entry_trunks_high = GRPTBL_entry.parse_GRPTBL_entry(memlist_data.words[9:])
-    print("MEMLIST PBX/MLHG", memlist_entry_pbx)
-    print("MEMLIST SVC CKTS", memlist_entry_svc)
-    print("MEMLIST TRUNKS 128-191", memlist_entry_trunks_low)
-    print("MEMLIST TRUNKS 192-255", memlist_entry_trunks_high)
+            case 11:
+                terminal = data.words[1] >> 8
+                group = data.words[1] & 0xff
+                return cls(address=address, u_type=u_type, terminal=terminal, group=group)
 
-    # groups = {}
-    # for n in range(0, grptbl_entry_trunks_low.n_entries):
-    #     group_number = 128 + n
-    #     pointer = grptbl_entry_trunks_low.pointer + (8*n)
-    #     trunk_data_range = range_starting_at_address(pointer, data)
-    #     group_entry = TRUNK_GROUP_entry.parse_TRUNK_GROUP_entry(group_number,
-    #                                                             trunk_data_range.words, pointer)
-    #     groups[group_number] = group_entry
+            case _:
+                return cls(address=address, u_type=u_type)
 
-    # svc_groups = {}
-    # for n in range(0, grptbl_entry_svc.n_entries):
-    #     group_number = 64 + n
-    #     pointer = grptbl_entry_svc.pointer + (4*n)
-    #     svc_data_range = range_starting_at_address(pointer, data)
-    #     group_entry = SERVICE_GROUP_entry.parse_SERVICE_GROUP_entry(group_number,
-    #                                                                 svc_data_range.words, pointer)
-    #     svc_groups[group_number] = group_entry
+@dataclass
+class SPN_HEAD_TABLE:
+    data: DataRange
 
-    if False:
-        print("Service Circuits:")
-        for group_n, group in svc_groups.items():
-            if(group.exists):
-                print(group)
+    def lookup_scanpoint(self, scanner: int, row: int, col: int):
+        w_index = (scanner << 3) | (row >> 2)
+        x_index = ((row & 0b11) << 4) | col
+        return self._lookup_entry(w_index, x_index)
 
-        print("Trunks:")
-        for group_n, group in groups.items():
-            if(group.exists):
-                print(group)
+    def lookup_oe(self, oe: str) -> LINE_SUBTRANSLATOR | UNIV_SUBTRANSLATOR:
+        """This OE is the concatenated string,
+         [2 digit Concentrator Group][Concentrator][Switch Group][Switch][Level]
+         Where all the other fields are one octal digit.
 
-    print("-"*20)
+        E.g.: 010016 is CG 1, Switch 1, Level 6.
+        """
 
+        oe_int = self._oe_string_to_number(oe)
+
+        # XXX: This minus one offset isn't documented.
+        return self._lookup_entry(oe_int >> 6, (oe_int & 0x3f) - 1)
+
+    def lookup_ten(self, ten: str) -> LINE_SUBTRANSLATOR | UNIV_SUBTRANSLATOR:
+
+        ten_int = self._ten_string_to_number(ten)
+        return self._lookup_entry(ten_int >>6, (ten_int & 0x3f) - 1)
+
+    @staticmethod
+    def _oe_string_to_number(oe: str) -> int:
+        if len(oe) != 6:
+            raise ValueError("OE must be a six digit string")
+        cg = int(oe[0:2], base=8)
+        c = int(oe[2], base=8)
+        sg = int(oe[3], base=8)
+        sw = int(oe[4], base=8)
+        lv = int(oe[5], base=8)
+        return (cg << 9) | (c << 8) | (sg << 6) | (sw << 3) | lv
+
+    @staticmethod
+    def _ten_string_to_number(ten: str) -> int:
+        if len(ten) != 6:
+            raise ValueError("OE must be a six digit string")
+        cg = int(ten[0:2], base=8)
+        c = int(ten[2], base=8)
+        sg = int(ten[3], base=8)
+        sw = int(ten[4], base=8)
+        lv = int(ten[5], base=8)
+        return (cg << 9) | (sg << 7) | (c << 6) | (sw << 3) | lv
+
+    def _lookup_entry(self, w_index: int, x_index: int) -> LINE_SUBTRANSLATOR | UNIV_SUBTRANSLATOR:
+        """
+        Misc subtranslator is indexed differently from Line and Univeral subtranslators"""
+
+        entry = self.data.words[w_index]
+
+        store_increment = entry & 0x3ff 
+        sub_type = entry >> 14
+
+        if sub_type == 1:
+            # Misc subtranslator
+            subtranslator_entry = self.data.subset(w_index + store_increment + x_index, 1)
+        else:
+            subtranslator_entry = self.data.subset(w_index + store_increment + 2*x_index, 6)
+
+        match sub_type:
+            case 0:
+                raise ValueError(f"Unassigned subtranslator type {sub_type}")
+            case 1:
+                raise NotImplementedError("Miscelaneous subtranslator not implemented")
+            case 2:
+                return UNIV_SUBTRANSLATOR.parse(subtranslator_entry)
+            case 3:
+                return LINE_SUBTRANSLATOR.parse(subtranslator_entry)
+            case _:
+                raise ValueError(f"Unknown subtranslator type {sub_type}")
+
+@dataclass
+class SPTBL:
+    """Figure 2. Scan point number translator.
+    Decodes a scan point into data on Figures 2A, 2B, 2C.
+    """
+    n_entries: int
+    spn_head_table_address: int
+    spn_head: SPN_HEAD_TABLE
+
+    @classmethod
+    def find(cls, base_address, all_data: DataRangeSet):
+        """Find the table in the set of tape blocks and load the spn_head table with data."""
+        table_data = all_data.range_starting_at_address(base_address, 3)
+        n_entries = table_data.words[1] >> 4
+        address = twentybit(table_data.words[1], table_data.words[2])
+
+        # XXX: this 10 is made up and probably wrong.
+        spn_head = SPN_HEAD_TABLE(data=all_data.range_starting_at_address(address, 127 + 10*127))
+        return cls(n_entries=n_entries, spn_head_table_address=address, spn_head=spn_head)
 

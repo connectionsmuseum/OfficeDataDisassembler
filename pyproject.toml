@@ -11,6 +11,7 @@ dynamic = ["version"]
 dependencies = [
     "numpy==2.1.*",
     "ruff>=0.14.10",
+    "typer>=0.21.0",
 ]
 
 [dependency-groups]
