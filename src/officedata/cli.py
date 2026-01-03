@@ -38,7 +38,7 @@ def scanpoints(
             raise typer.BadParameter("TEN must be six octal digits")
 
     base_filename = "TapeData/1/"
-    data = load_track(base_filename)
+    data = load_track(base_filename, start_block=167, end_block=317)
 
     SPTBL_base = 0o421443
     sptbl = SPTBL.find(SPTBL_base, data)
@@ -53,7 +53,7 @@ def grptable(group_number: int):
     """Look up a service circuit group in the member list table (Figure 15.)"""
 
     base_filename = "TapeData/1/"
-    data = load_track(base_filename)
+    data = load_track(base_filename, start_block=167, end_block=317)
 
     MEMLST_base = 0o421424
     memlist = MEMLST.parse(data.range_starting_at_address(MEMLST_base))
@@ -75,5 +75,16 @@ def grptable(group_number: int):
         for memlist_entry in memlist_grp.members:
             print(memlist_entry)
 
+@main.command()
+def blocks():
+
+    base_filename = "TapeData/1/"
+
+    for block_n in range(167, 317):
+        data = load_track(base_filename, start_block=block_n, end_block=block_n + 1)
+        if data and len(data.ranges) > 0:
+            print(f"Block {block_n}: 0o{data.ranges[0].start_address:o} - 0o{data.ranges[0].start_address + data.ranges[0].length:o} ")
+        else:
+            print(f"Block {block_n} no data")
 
 

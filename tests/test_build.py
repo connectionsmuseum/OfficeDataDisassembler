@@ -6,7 +6,7 @@ from officedata.odd import load_track, GRPTBL
 def test_build_tree():
 
     base_filename = "TapeData/1/"
-    data = load_track(base_filename)
+    data = load_track(base_filename, start_block=167, end_block=317)
 
     grptable_base = 0o421410
 

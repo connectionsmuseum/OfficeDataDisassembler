@@ -134,7 +134,7 @@ class SERVICE_GROUP:
 
     def print_extended(self):
         print(str(self))
-        print(f"Start address: 0o{self.data.start_address:o}, End address: 0o{self.data.end_address:o}")
+        print(f"Start address: 0o{self.data.start_address:o}, End address: 0o{(self.data.start_address + self.data.length):o}")
         print(f"Header byte: 0o{self.data.words[0]:o}")
 
 
@@ -184,7 +184,6 @@ class GRPTBL:
             group_number = 64 + n
             pointer = svc_table_address + (4*n)
             svc_data_range = range_set.range_starting_at_address(pointer, 4)
-            # print(f"{pointer:o}, {svc_data_range.end_address:o}")
             group = SERVICE_GROUP_entry.parse(group_number, svc_data_range)
             svc_table_groups.append(group)
 
@@ -247,6 +246,7 @@ class MEMLST_SVC_GROUP:
     n_members: int
     n_spares: int
     group_format: int
+    address: int
 
     members: list[MEMLIST_SVC_MEMBER]
 
@@ -263,11 +263,11 @@ class MEMLST_SVC_GROUP:
             cktcode = data.words[n + 1 + (highest_mem + 1)//2] >> 11
             members.append(MEMLIST_SVC_MEMBER(scanpoint=scanpoint, dta=dta, cktcode=cktcode))
 
-        return cls(n_members=n_members, n_spares=n_spares, group_format=group_format, members=members)
+        return cls(n_members=n_members, n_spares=n_spares, group_format=group_format, members=members, address=data.start_address)
 
     def __repr__(self):
         return (f"MEMLST_SVC_GROUP(n_members={self.n_members:d}, n_spares={self.n_spares:d}, "
-                f"group_format={self.group_format:d}, members=[{len(self.members)} entries])")
+                f"group_format={self.group_format:d}, address=0o{self.address:o} members=[{len(self.members)} entries])")
 
 
 @dataclass
@@ -344,6 +344,7 @@ class UNIV_SUBTRANSLATOR:
 class LINE_SUBTRANSLATOR:
     address: int
     u_type: int
+    data: DataRange
     terminal: int | None = None
     group: int | None = None
     scanpoint: tuple[int, int, int] | None = None
@@ -356,19 +357,28 @@ class LINE_SUBTRANSLATOR:
         match u_type:
             case 10:
                 scanpoint = data.words[1] & 0xfff
-                return cls(address=address, u_type=u_type, scanpoint=decode_scanpoint(scanpoint))
+                return cls(address=address, u_type=u_type, data=data, scanpoint=decode_scanpoint(scanpoint))
 
             case 11:
                 terminal = data.words[1] >> 8
                 group = data.words[1] & 0xff
-                return cls(address=address, u_type=u_type, terminal=terminal, group=group)
+                return cls(address=address, u_type=u_type, data=data, terminal=terminal, group=group)
 
             case _:
-                return cls(address=address, u_type=u_type)
+                return cls(address=address, u_type=u_type, data=data)
+
+    def __repr__(self):
+        if self.terminal and self.group:
+            return (f"LINE_SUBTRANSLATOR(address=0o{self.address:o}, u_type={self.u_type:d}, terminal={self.terminal:d}, "
+                f"group={self.group:d}, scanpoint={self.scanpoint}, data=[0o{self.data.words[0]:o}, 0o{self.data.words[1]:o}]")
+        else:
+            return (f"LINE_SUBTRANSLATOR(address=0o{self.address:o}, u_type={self.u_type:d}, terminal={self.terminal}, "
+                f"group={self.group}, scanpoint={self.scanpoint}, data=[0o{self.data.words[0]:o}, 0o{self.data.words[1]:o}]")
 
 @dataclass
 class SPN_HEAD_TABLE:
-    data: DataRange
+    data: DataRangeSet
+    table_address: int
 
     def lookup_scanpoint(self, scanner: int, row: int, col: int):
         w_index = (scanner << 3) | (row >> 2)
@@ -386,12 +396,12 @@ class SPN_HEAD_TABLE:
         oe_int = self._oe_string_to_number(oe)
 
         # XXX: This minus one offset isn't documented.
-        return self._lookup_entry(oe_int >> 6, (oe_int & 0x3f) - 1)
+        return self._lookup_entry(oe_int >> 6, (oe_int & 0x3f) - 0)
 
     def lookup_ten(self, ten: str) -> LINE_SUBTRANSLATOR | UNIV_SUBTRANSLATOR:
 
         ten_int = self._ten_string_to_number(ten)
-        return self._lookup_entry(ten_int >>6, (ten_int & 0x3f) - 1)
+        return self._lookup_entry(ten_int >>6, (ten_int & 0x3f) - 0)
 
     @staticmethod
     def _oe_string_to_number(oe: str) -> int:
@@ -419,16 +429,16 @@ class SPN_HEAD_TABLE:
         """
         Misc subtranslator is indexed differently from Line and Univeral subtranslators"""
 
-        entry = self.data.words[w_index]
+        entry = self.data.range_starting_at_address(self.table_address, 127).words[w_index]
 
-        store_increment = entry & 0x3ff 
+        store_increment = entry & 0x3ff
         sub_type = entry >> 14
 
         if sub_type == 1:
             # Misc subtranslator
-            subtranslator_entry = self.data.subset(w_index + store_increment + x_index, 1)
+            subtranslator_entry = self.data.range_starting_at_address(self.table_address + w_index + store_increment + x_index, 1)
         else:
-            subtranslator_entry = self.data.subset(w_index + store_increment + 2*x_index, 6)
+            subtranslator_entry = self.data.range_starting_at_address(self.table_address + w_index + store_increment + 2*x_index, 2)
 
         match sub_type:
             case 0:
@@ -458,7 +468,6 @@ class SPTBL:
         n_entries = table_data.words[1] >> 4
         address = twentybit(table_data.words[1], table_data.words[2])
 
-        # XXX: this 10 is made up and probably wrong.
-        spn_head = SPN_HEAD_TABLE(data=all_data.range_starting_at_address(address, 127 + 10*127))
+        spn_head = SPN_HEAD_TABLE(data=all_data, table_address=address)
         return cls(n_entries=n_entries, spn_head_table_address=address, spn_head=spn_head)
 

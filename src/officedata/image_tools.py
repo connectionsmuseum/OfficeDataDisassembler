@@ -7,33 +7,35 @@ from dataclasses import dataclass
 
 @dataclass
 class DataRange:
-    start_address: int
-    end_address: int
+    start_address: int # Address of the first word
+    # end_address: int # Address of the last word
     words: npt.NDArray[np.uint16]
 
     def subset(self, offset, length):
         new_start = self.start_address + offset
 
-        if new_start + length > self.end_address:
-            raise ValueError(f"Offset {offset} and length {length} not within size {self.end_address - self.start_address}")
+        if new_start + length > self.start_address + len(self.words):
+            raise ValueError(f"Offset {offset} and length {length} not within size {len(self.words)}")
 
         return DataRange(start_address=new_start,
-                         end_address=new_start + length,
                          words=self.words[offset:(offset+length)])
 
     def subset_at_address(self, address, length):
 
-        if address < self.start_address or address + length > self.end_address:
-            raise ValueError(f"New addresss 0o{address:06o} not within range 0o{self.start_address:06o}-0o{self.end_address:06o}")
+        if (address < self.start_address) or (address + length > self.start_address + len(self.words)):
+            raise ValueError(f"New addresss 0o{address:06o} not within range 0o{self.start_address:06o}-0o{(self.start_address + len(self.words)):06o}")
 
         offset = address - self.start_address
 
         return DataRange(start_address=address,
-                         end_address=address + length,
                          words=self.words[offset:(offset+length)])
 
+    @property
+    def length(self):
+        return len(self.words)
+
     def __repr__(self):
-        return f"DataRange(start_address=0o{self.start_address:o}, end_address=0o{self.end_address:o})"
+        return f"DataRange(start_address=0o{self.start_address:o}, end_address=0o{(self.start_address + len(self.words)):o})"
 
 
 class DataRangeSet:
@@ -45,13 +47,17 @@ class DataRangeSet:
     ranges: list[DataRange]
 
     def __init__(self, ranges: list[DataRange]):
+        for range in ranges:
+            for test_range in ranges:
+                assert not (test_range.start_address < range.start_address < test_range.start_address + test_range.length), "Overlapping range"
+                assert not (test_range.start_address < (range.start_address + range.length) < test_range.start_address + test_range.length), "Overlapping range"
         self.ranges = ranges
 
     def _find_range(self, target_address: int) -> DataRange:
         """Find a range and return it verbatim."""
         for data_range in self.ranges:
             if((target_address >= data_range.start_address) and
-            (target_address < data_range.end_address)):
+            (target_address < data_range.start_address + data_range.length)):
                 return data_range
 
         raise ValueError(f"Target address 0o{target_address:o} not found in data")
@@ -70,34 +76,34 @@ class DataRangeSet:
         if length == 0:
             new_range = DataRange(
                 start_address=original_range.start_address + offset,
-                end_address=original_range.end_address,
                 words=np.copy(original_range.words[offset:]),
             )
 
         elif length > 0 and (offset + length) <= len(original_range.words):
             new_range = DataRange(
                 start_address=original_range.start_address + offset,
-                end_address=original_range.end_address,
                 words=np.copy(original_range.words[offset : (offset + length)]),
             )
         else:
             # The more difficult case, combining ranges
             new_word_list = []
             new_word_list.append(np.copy(original_range.words[offset:]))
-            current_address = original_range.end_address
+            current_address = original_range.start_address + original_range.length
             target_end_address = target_address + length
             while current_address < target_end_address:
+                # Next range is a raw range, not starting at current_address
                 next_range = self._find_range(current_address)
+                assert next_range.start_address == current_address
                 max_offset = min(target_end_address - current_address,
-                                 next_range.end_address - current_address)
+                                 next_range.start_address + next_range.length - current_address)
                 assert max_offset > 0, "max_offset should not be negative"
 
                 new_word_list.append(np.copy(next_range.words[:max_offset]))
                 current_address += max_offset
 
+            # print(new_word_list)
             new_range = DataRange(
                 start_address=target_address,
-                end_address=target_address + length,
                 words=np.concatenate(new_word_list),
             )
 
@@ -128,8 +134,7 @@ def load_track(base_filename, start_block=0, end_block=358) -> DataRangeSet:
             offset =  ((block_data[next_header] & 0xf) << 16) + block_data[next_header + 1]
 
             new_range = DataRange(start_address=offset,
-                                  end_address=offset+length,
-                                  words=block_data[next_header+2:next_header+length])
+                                  words=block_data[next_header+2:next_header+length + 2])
             data_ranges.append(new_range)
 
             next_header += length + 2
