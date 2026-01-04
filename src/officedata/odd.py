@@ -85,6 +85,12 @@ class SERVICE_GROUP_entry:
         memory_address = memory_address
         return cls(grp_num, mbr, exists, int(highest_member), int(sel_status_block_index), int(member_list_index),
                    int(circuit_code), int(memory_address), data=data)
+
+    def __repr__(self):
+        return (f"SERVICE_GROUP_entry(grp_num={self.grp_num}, mbr={self.mbr}, exists={self.exists}, highest_member={self.highest_member}, "
+                f"circuit_code={self.circuit_code:d} address={self.data.start_address:o} word0=0o{self.data.words[0]:o})")
+
+
 @dataclass
 class SERVICE_GROUP_TABLE:
     """Figure 12C table"""
@@ -233,12 +239,13 @@ class MASTER_TABLE_INDEX:
 @dataclass
 class MEMLIST_SVC_MEMBER:
     """Individual entry on Figure 15C"""
-    scanpoint: int
-    cktcode: int
-    dta: int
+    scanpoint: int = 0
+    cktcode: int = 0
+    dta: int = 0
+    ten: int = 0
 
     def __repr__(self):
-        return f"MEMLIST_SVC_MEMBER(scanpoint={self.scanpoint:d}, cktcode={self.cktcode:d}, dta={decode_dta(self.dta)}"
+        return f"MEMLIST_SVC_MEMBER(scanpoint={self.scanpoint:d}, cktcode={self.cktcode:d}, dta={decode_dta(self.dta)}, ten=0o{self.ten:o})"
 
 @dataclass
 class MEMLST_SVC_GROUP:
@@ -257,11 +264,18 @@ class MEMLST_SVC_GROUP:
         group_format = data.words[0] >> 14
 
         members = []
-        for n in range(0, n_members):
-            scanpoint = data.words[n//2 + 1] & 0xff if n % 2 == 0 else data.words[n//2 + 1] >> 8
-            dta = data.words[n + 1 + (highest_mem + 1)//2] & 0x7ff
-            cktcode = data.words[n + 1 + (highest_mem + 1)//2] >> 11
-            members.append(MEMLIST_SVC_MEMBER(scanpoint=scanpoint, dta=dta, cktcode=cktcode))
+
+        if group_format == 1:
+            for n in range(0, n_members):
+                ten = data.words[n + 1] & 0xfff
+                members.append(MEMLIST_SVC_MEMBER(ten=ten))
+
+        elif group_format == 2:
+            for n in range(0, n_members):
+                scanpoint = data.words[n//2 + 1] & 0xff if n % 2 == 0 else data.words[n//2 + 1] >> 8
+                dta = data.words[n + 1 + (highest_mem + 1)//2] & 0x7ff
+                cktcode = data.words[n + 1 + (highest_mem + 1)//2] >> 11
+                members.append(MEMLIST_SVC_MEMBER(scanpoint=scanpoint, dta=dta, cktcode=cktcode))
 
         return cls(n_members=n_members, n_spares=n_spares, group_format=group_format, members=members, address=data.start_address)
 
